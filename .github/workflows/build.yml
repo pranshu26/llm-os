@@ -20,6 +20,37 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Verify workload placement and CPU weights
+        run: |
+          uid=$(id -u)
+          sudo systemctl start "user@${uid}.service"
+          export XDG_RUNTIME_DIR="/run/user/$uid"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+          timeout 15s bash -c 'until systemctl --user show-environment >/dev/null 2>&1; do sleep .2; done'
+
+          units_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+          mkdir -p "$units_dir"
+          install -m 0644 system_files/usr/lib/systemd/user/*.slice "$units_dir"
+          systemctl --user daemon-reload
+
+          export workload=caller
+          for mode in interactive background; do
+            weight=$(system_files/usr/bin/llm-run "$mode" -- bash -euc '
+              [[ $workload == caller ]]
+              cgroup=$(cut -d: -f3 /proc/self/cgroup)
+              slice=${cgroup%/*}
+              [[ $slice == */llm.slice/llm-"$1".slice ]]
+              cat "/sys/fs/cgroup$slice/cpu.weight"
+            ' bash "$mode")
+            case "$mode:$weight" in
+              interactive:100|background:20) ;;
+              *) echo "Unexpected CPU weight for $mode: $weight" >&2; exit 1 ;;
+            esac
+          done
+
+          exit_status=0
+          system_files/usr/bin/llm-run interactive -- sh -c 'exit 37' || exit_status=$?
+          test "$exit_status" -eq 37
       - run: docker build --file Containerfile --tag llm-os:ci .
       - run: |
           docker run --rm --entrypoint /bin/bash llm-os:ci -euc '
