@@ -4,23 +4,29 @@ usage() {
     printf '%s\n' 'Usage: llm-run {interactive|background} -- COMMAND [ARG...]'
 }
 
-case "${1-}" in
-    -h|--help)
-        if [ "$#" -eq 1 ]; then
-            usage
-            exit 0
-        fi
-        ;;
-    interactive|background)
-        if [ "$#" -ge 3 ] && [ "$2" = -- ] && [ -n "$3" ]; then
-            workload=$1
+run_scope() {
+    exec systemd-run --user --scope --quiet --expand-environment=no "$@"
+}
+
+if [ "$#" -eq 1 ] && { [ "$1" = -h ] || [ "$1" = --help ]; }; then
+    usage
+    exit 0
+fi
+
+if [ "$#" -ge 3 ] && [ "$2" = -- ] && [ -n "$3" ]; then
+    case "$1" in
+        interactive)
             shift 2
-            exec systemd-run --user --scope --quiet --expand-environment=no \
-                --slice="llm-$workload.slice" --description="LLM $workload workload" \
+            run_scope --slice=llm-interactive.slice --description='LLM interactive workload' \
                 -- "$@"
-        fi
-        ;;
-esac
+            ;;
+        background)
+            shift 2
+            run_scope --slice=llm-background.slice --description='LLM background workload' \
+                -- "$@"
+            ;;
+    esac
+fi
 
 usage >&2
 exit 2
